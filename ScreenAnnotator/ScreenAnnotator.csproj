@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>Assets\ScreenAnnotator.ico</ApplicationIcon>
+    <AssemblyName>ScreenAnnotator</AssemblyName>
+    <RootNamespace>ScreenAnnotator</RootNamespace>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Product>屏幕笔</Product>
+    <Company>知溯工具</Company>
+    <Description>透明屏幕标注与微信式截图工具</Description>
+    <Platforms>AnyCPU</Platforms>
+  </PropertyGroup>
+</Project>

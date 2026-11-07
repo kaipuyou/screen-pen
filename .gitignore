@@ -1,0 +1,46 @@
+﻿# Visual Studio / .NET
+.vs/
+bin/
+obj/
+[Bb]uild/
+[Bb]uilds/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+
+# .NET local environment
+.dotnet-home/
+.localappdata/
+
+# Build / publish output
+artifacts/
+publish/
+交付包/
+
+# IDE
+.idea/
+
+# Logs / temporary files
+*.log
+*.tmp
+*.temp
+
+# Local configuration / secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local messaging bridge credentials and login QR codes
+/config.toml
+/.config.toml.lock
+/*-qr.png
+
+# Installer payload is generated during packaging
+/installer/Payload/

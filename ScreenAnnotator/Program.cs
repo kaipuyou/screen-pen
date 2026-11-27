@@ -16,6 +16,7 @@ internal static class Program
             return;
         }
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        using var mainForm = new MainForm();
+        Application.Run(mainForm);
     }
 }

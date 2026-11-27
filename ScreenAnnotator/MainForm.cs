@@ -13,6 +13,7 @@ public sealed class MainForm : Form
     private const int SwRestore = 9;
     private readonly AppSettings settings = SettingsService.Load();
     private readonly NotifyIcon tray = new();
+    private readonly ContextMenuStrip trayMenu = new();
     private readonly HotkeyService hotkeys = new();
     private OverlayForm? overlay;
     private readonly Stack<AnnotationItem> undo = new();
@@ -20,6 +21,9 @@ public sealed class MainForm : Form
     private string? currentProject;
     private IntPtr underlyingWindow;
     private bool captureInProgress;
+    private bool exitRequested;
+    private bool resourcesDisposed;
+    private CaptureMode captureMode = CaptureMode.Free;
 
     public MainForm()
     {
@@ -43,8 +47,29 @@ public sealed class MainForm : Form
     }
     private void BuildTray()
     {
-        var menu = new ContextMenuStrip(); menu.Items.Add("开始屏幕笔 (F2)", null, (_, _) => ToggleOverlay()); menu.Items.Add("重置屏幕标注 (F1)", null, (_, _) => ResetOverlay()); menu.Items.Add("使用说明", null, (_, _) => new HelpForm().Show()); menu.Items.Add("打开主窗口", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); }); menu.Items.Add("退出", null, (_, _) => Application.Exit());
-        tray.Text = "屏幕笔"; tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application; tray.ContextMenuStrip = menu; tray.Visible = true; tray.DoubleClick += (_, _) => ToggleOverlay();
+        trayMenu.Items.Add("开始屏幕笔 (F2)", null, (_, _) => ToggleOverlay());
+        trayMenu.Items.Add("重置屏幕标注 (F1)", null, (_, _) => ResetOverlay());
+        trayMenu.Items.Add("使用说明", null, (_, _) => new HelpForm().Show(this));
+        trayMenu.Items.Add("打开主窗口", null, (_, _) =>
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+        });
+        trayMenu.Items.Add("退出", null, (_, _) => ExitFromTray());
+        tray.Text = "屏幕笔";
+        tray.Icon = Icon;
+        tray.ContextMenuStrip = trayMenu;
+        tray.DoubleClick += (_, _) => ToggleOverlay();
+        tray.Visible = true;
+    }
+
+    private void ExitFromTray()
+    {
+        if (exitRequested) return;
+        exitRequested = true;
+        tray.Visible = false;
+        Application.ExitThread();
     }
     private void RegisterHotkeys()
     {
@@ -54,6 +79,7 @@ public sealed class MainForm : Form
     }
     private void ToggleOverlay()
     {
+        if (exitRequested || captureInProgress) return;
         if (overlay != null)
         {
             // F2 是“开始使用”。已在编辑时不改变现场，避免误触导致结束。
@@ -89,7 +115,7 @@ public sealed class MainForm : Form
 
     public void ResetOverlay()
     {
-        if (overlay == null) return;
+        if (exitRequested || overlay == null || captureInProgress) return;
         var wasEditing = overlay.IsEditing;
         overlay.ResetAnnotations();
         if (wasEditing) overlay.SetEditing(true);
@@ -108,7 +134,7 @@ public sealed class MainForm : Form
     public void BeginRegionCapture()
     {
         // 截图按微信习惯只在屏幕笔正在接管时响应，结束后不会误触发。
-        if (overlay == null || !overlay.IsEditing || captureInProgress) return;
+        if (exitRequested || overlay == null || !overlay.IsEditing || captureInProgress) return;
         captureInProgress = true;
         try
         {
@@ -122,29 +148,37 @@ public sealed class MainForm : Form
 
     private void BeginRegionCaptureCore()
     {
-        if (overlay == null) return;
-        var screen = Screen.FromPoint(Cursor.Position); var bounds = screen.Bounds;
-        using var selector = new CaptureSelector(bounds);
-        overlay.ToolbarVisible = false;
-        var result = selector.ShowDialog(overlay);
-        if (result == DialogResult.Cancel || selector.Action == CaptureAction.Cancel || selector.Selection.Width <= 0 || selector.Selection.Height <= 0)
-        {
-            overlay.SetEditing(true);
-            return;
-        }
-        // 对话框已完成，先彻底隐藏截图选择层，再读取屏幕合成画面。
-        selector.Hide();
-        var captureRect = new Rectangle(bounds.Left + selector.Selection.Left, bounds.Top + selector.Selection.Top, selector.Selection.Width, selector.Selection.Height);
-        using var bitmap = ScreenCaptureService.Capture(captureRect);
+        if (overlay is not { } activeOverlay) return;
+        var bounds = Screen.FromPoint(Cursor.Position).Bounds;
+        var toolbarWasVisible = activeOverlay.ToolbarVisible;
+        var copied = false;
         try
         {
-            Clipboard.SetImage(new Bitmap(bitmap));
-            overlay.SetEditing(false);
+            activeOverlay.PrepareForCapture();
+            using var frame = ScreenCaptureService.Capture(bounds);
+            using var selector = new CaptureSelector(bounds, frame, captureMode);
+            var result = selector.ShowDialog(activeOverlay);
+            captureMode = selector.Mode;
+            if (exitRequested || result != DialogResult.OK) return;
+
+            using var bitmap = frame.Clone(selector.Selection, frame.PixelFormat);
+            Clipboard.SetImage(bitmap);
+            copied = true;
+            activeOverlay.SetEditing(false);
             RestoreUnderlyingWindow();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"复制截图失败：{ex.Message}", "屏幕笔", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (!exitRequested)
+                MessageBox.Show(activeOverlay, $"截图失败：{ex.Message}", "屏幕笔", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            if (!copied && !exitRequested)
+            {
+                activeOverlay.SetEditing(true);
+                activeOverlay.ToolbarVisible = toolbarWasVisible;
+            }
         }
     }
     public void SaveProject()
@@ -163,105 +197,19 @@ public sealed class MainForm : Form
     public void Undo() { if (overlay == null) return; var item = overlay.RemoveLastItem(); if (item != null) redo.Push(item); }
     public void Redo() { if (overlay == null || redo.Count == 0) return; overlay.AddItem(redo.Pop()); }
     public void ShowStatus(string message) => tray.ShowBalloonTip(1800, "屏幕笔", message, ToolTipIcon.Info);
-    protected override void OnFormClosing(FormClosingEventArgs e) { hotkeys.Dispose(); tray.Visible = false; tray.Dispose(); overlay?.Dispose(); base.OnFormClosing(e); }
-}
-
-internal sealed class CaptureSelector : Form
-{
-    private readonly Button confirmButton;
-    private readonly Button cancelButton;
-    private Point start;
-    private bool selecting;
-    public Rectangle Selection { get; private set; }
-    public CaptureAction Action { get; private set; } = CaptureAction.Cancel;
-
-    public CaptureSelector(Rectangle bounds)
+    protected override void Dispose(bool disposing)
     {
-        FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.Manual;
-        Bounds = bounds;
-        TopMost = true;
-        BackColor = Color.Black;
-        Opacity = .32;
-        Cursor = Cursors.Cross;
-        KeyPreview = true;
-
-        cancelButton = new Button { Text = "×", Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), Width = 46, Height = 40, BackColor = Color.FromArgb(210, 55, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, Visible = false };
-        confirmButton = new Button { Text = "✓", Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), Width = 46, Height = 40, BackColor = Color.FromArgb(35, 160, 80), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, Visible = false };
-        confirmButton.Click += (_, _) => Complete(CaptureAction.Copy);
-        cancelButton.Click += (_, _) => Complete(CaptureAction.Cancel);
-        Controls.Add(cancelButton);
-        Controls.Add(confirmButton);
-
-        MouseDown += (_, e) =>
+        if (disposing && !resourcesDisposed)
         {
-            if (e.Button != MouseButtons.Left) return;
-            selecting = true;
-            start = e.Location;
-            Selection = Rectangle.Empty;
-            confirmButton.Visible = false;
-            cancelButton.Visible = false;
-            Invalidate();
-        };
-        MouseMove += (_, e) =>
-        {
-            if (!selecting) return;
-            Selection = Normalize(start, e.Location);
-            Invalidate();
-        };
-        MouseUp += (_, e) =>
-        {
-            if (!selecting || e.Button != MouseButtons.Left) return;
-            selecting = false;
-            Selection = Normalize(start, e.Location);
-            PositionActionButtons();
-            Invalidate();
-        };
-        KeyDown += (_, e) =>
-        {
-            if (e.KeyCode == Keys.Escape) Complete(CaptureAction.Cancel);
-            else if (e.KeyCode == Keys.Enter) Complete(CaptureAction.Copy);
-        };
+            resourcesDisposed = true;
+            exitRequested = true;
+            tray.Visible = false;
+            tray.Dispose();
+            trayMenu.Dispose();
+            hotkeys.Dispose();
+            overlay?.Dispose();
+            overlay = null;
+        }
+        base.Dispose(disposing);
     }
-
-    private void Complete(CaptureAction action)
-    {
-        if (action != CaptureAction.Cancel && (Selection.Width <= 0 || Selection.Height <= 0)) return;
-        Action = action;
-        DialogResult = action == CaptureAction.Cancel ? DialogResult.Cancel : DialogResult.OK;
-    }
-
-    private void PositionActionButtons()
-    {
-        if (Selection.Width < 2 || Selection.Height < 2) return;
-        var totalWidth = confirmButton.Width + cancelButton.Width + 6;
-        var left = Math.Clamp(Selection.Right - totalWidth, 4, Math.Max(4, ClientSize.Width - totalWidth - 4));
-        var below = Selection.Bottom + 6;
-        var top = below + confirmButton.Height <= ClientSize.Height ? below : Math.Max(4, Selection.Bottom - confirmButton.Height - 6);
-        cancelButton.Location = new Point(left, top);
-        confirmButton.Location = new Point(left + cancelButton.Width + 6, top);
-        confirmButton.Visible = true;
-        cancelButton.Visible = true;
-        confirmButton.BringToFront();
-        cancelButton.BringToFront();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        if (Selection.Width <= 0 || Selection.Height <= 0) return;
-        using var pen = new Pen(Color.FromArgb(255, 75, 75), 3);
-        e.Graphics.DrawRectangle(pen, Selection);
-        using var brush = new SolidBrush(Color.White);
-        using var font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold);
-        e.Graphics.DrawString($"{Selection.Width} × {Selection.Height}   ×取消   ✓复制", font, brush, Selection.Left + 4, Math.Max(2, Selection.Top - 24));
-    }
-
-    private static Rectangle Normalize(Point a, Point b) => new(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
-}
-
-internal enum CaptureAction
-{
-    Cancel,
-    Copy
 }

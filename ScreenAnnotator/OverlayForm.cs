@@ -49,6 +49,7 @@ public sealed class OverlayForm : Form
                 markerView = selectedMarker.ViewMode;
             }
             UpdateSizeDisplay();
+            UpdateViewButton();
         }
     }
     public bool ToolbarVisible { get => toolbar.Visible; set => toolbar.Visible = value; }
@@ -63,6 +64,14 @@ public sealed class OverlayForm : Form
         return item;
     }
     public void AddItem(AnnotationItem item) { canvas.Items.Add(item); canvas.Invalidate(); }
+
+    public void PrepareForCapture()
+    {
+        inputLayer?.Hide();
+        ToolbarVisible = false;
+        Refresh();
+    }
+
     public void SetEditing(bool editing)
     {
         if (inputLayer == null) return;
@@ -225,11 +234,11 @@ public sealed class OverlayForm : Form
     }
     private void OverlayMouseDown(object? s, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left || toolbar.Bounds.Contains(e.Location)) return;
+        if (e.Button != MouseButtons.Left || (toolbar.Visible && toolbar.Bounds.Contains(e.Location))) return;
         if (CurrentTool is ToolKind.Text or ToolKind.Person or ToolKind.Camera)
         {
-            var existing = canvas.HitTestInteractive(e.Location);
-            if (existing != null && existing.Tool == CurrentTool)
+            var existing = canvas.HitTestInteractive(e.Location, CurrentTool);
+            if (existing != null)
             {
                 if (CurrentTool == ToolKind.Text)
                 {

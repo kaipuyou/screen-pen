@@ -43,17 +43,17 @@ public sealed class DrawingCanvas : Control
     {
         if (item.Points.Count == 0) return;
         var c = Color.FromArgb(Math.Clamp(item.Style.Alpha, 0, 255), item.Style.DrawingColor);
+        if (item.Tool is ToolKind.Person or ToolKind.Camera)
+        {
+            DrawMarker(g, item, c);
+            return;
+        }
         using var pen = new Pen(c, Math.Max(1, item.Style.Width)) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
         if (item.Tool == ToolKind.Highlighter) { pen.Color = Color.FromArgb(Math.Min(120, item.Style.Alpha), item.Style.DrawingColor); pen.Width *= 3; }
         if (item.Tool == ToolKind.Eraser) { pen.Color = Color.Magenta; pen.Width *= 4; }
         if (item.Tool is ToolKind.Pen or ToolKind.Highlighter or ToolKind.Eraser or ToolKind.Wave)
         {
             if (item.Points.Count > 1) g.DrawLines(pen, item.Tool == ToolKind.Wave ? MakeWave(item.Points) : item.Points.ToArray());
-            return;
-        }
-        if (item.Tool is ToolKind.Person or ToolKind.Camera)
-        {
-            DrawMarker(g, item);
             return;
         }
         var a = item.Points[0]; var b = item.Points[^1]; var r = RectangleF.FromLTRB(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
@@ -80,95 +80,112 @@ public sealed class DrawingCanvas : Control
         return null;
     }
 
-    public AnnotationItem? HitTestInteractive(PointF point)
+    public AnnotationItem? HitTestInteractive(PointF point, ToolKind tool)
     {
-        using var g = CreateGraphics();
+        if (tool == ToolKind.Text) return HitTestText(point);
+
         for (var i = Items.Count - 1; i >= 0; i--)
         {
             var item = Items[i];
-            if (item.Tool == ToolKind.Text && item.Points.Count > 0 && !string.IsNullOrEmpty(item.Text))
-            {
-                using var font = new Font("Microsoft YaHei UI", item.Style.FontSize);
-                var size = g.MeasureString(item.Text, font);
-                var bounds = new RectangleF(item.Points[0], size);
-                bounds.Inflate(8, 8);
-                if (bounds.Contains(point)) return item;
-            }
-            else if (item.Tool is ToolKind.Person or ToolKind.Camera && item.Points.Count > 0)
-            {
-                var scale = MarkerScale(item);
-                if (Distance(point, item.Points[0]) <= scale * 1.5f) return item;
-            }
+            if (item.Tool == tool && item.Points.Count > 0 &&
+                Distance(point, item.Points[0]) <= MarkerScale(item) * 1.15f)
+                return item;
         }
         return null;
     }
 
-    private static void DrawMarker(Graphics g, AnnotationItem item)
+    private static void DrawMarker(Graphics g, AnnotationItem item, Color color)
     {
         var anchor = item.Points[0];
-        var direction = item.Points.Count > 1 ? item.Points[^1] : new PointF(anchor.X + 1, anchor.Y);
-        var angle = MathF.Atan2(direction.Y - anchor.Y, direction.X - anchor.X);
+        var direction = item.Points[^1];
+        var length = Distance(direction, anchor);
+        var topPerson = item.Tool == ToolKind.Person && item.ViewMode == MarkerView.Top;
+        var angle = length < 2 ? 0 : MathF.Atan2(direction.Y - anchor.Y, direction.X - anchor.X) * 180f / MathF.PI;
+        if (topPerson && length >= 2) angle -= 90;
         var scale = MarkerScale(item);
-        var color = Color.FromArgb(Math.Clamp(item.Style.Alpha, 0, 255), item.Style.DrawingColor);
-        using var pen = new Pen(color, Math.Max(2, item.Style.Width)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-        using var fill = new SolidBrush(Color.FromArgb(Math.Min(72, Math.Max(28, item.Style.Alpha / 3)), item.Style.DrawingColor));
-        if (item.Tool == ToolKind.Person) DrawPerson(g, anchor, angle, scale, pen, fill, item.ViewMode);
-        else DrawCamera(g, anchor, angle, scale, pen, fill, item.ViewMode, direction);
-    }
-
-    private static void DrawPerson(Graphics g, PointF center, float angle, float scale, Pen pen, Brush fill, MarkerView view)
-    {
+        using var pen = new Pen(color, Math.Clamp(item.Style.Width / scale, .085f, .14f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
         var state = g.Save();
         try
         {
-            g.TranslateTransform(center.X, center.Y); g.RotateTransform(angle * 180f / MathF.PI);
-            if (view == MarkerView.Top)
-            {
-                g.FillEllipse(fill, -scale * .22f, -scale * .62f, scale * .44f, scale * .44f); g.DrawEllipse(pen, -scale * .22f, -scale * .62f, scale * .44f, scale * .44f);
-                g.FillEllipse(fill, -scale * .34f, -scale * .20f, scale * .68f, scale * .70f); g.DrawEllipse(pen, -scale * .34f, -scale * .20f, scale * .68f, scale * .70f);
-                g.DrawLine(pen, -scale * .30f, scale * .05f, -scale * .70f, scale * .35f); g.DrawLine(pen, scale * .30f, scale * .05f, scale * .70f, scale * .35f);
-                g.DrawLine(pen, -scale * .16f, scale * .48f, -scale * .36f, scale * .86f); g.DrawLine(pen, scale * .16f, scale * .48f, scale * .36f, scale * .86f); DrawDirectionNose(g, pen, scale * .24f);
-            }
+            g.TranslateTransform(anchor.X, anchor.Y);
+            g.RotateTransform(angle);
+            g.ScaleTransform(scale, scale);
+            if (item.Tool == ToolKind.Camera)
+                DrawCamera(g, pen, item.ViewMode, Math.Max(2.8f, length / scale));
             else
-            {
-                g.FillEllipse(fill, -scale * .20f, -scale * .82f, scale * .40f, scale * .40f); g.DrawEllipse(pen, -scale * .20f, -scale * .82f, scale * .40f, scale * .40f);
-                FillRoundedRectangle(g, fill, -scale * .28f, -scale * .40f, scale * .56f, scale * .95f, scale * .14f); DrawRoundedRectangle(g, pen, -scale * .28f, -scale * .40f, scale * .56f, scale * .95f, scale * .14f);
-                g.DrawLine(pen, scale * .26f, -scale * .28f, scale * .64f, scale * .10f); g.DrawLine(pen, -scale * .08f, scale * .54f, -scale * .26f, scale * .94f); g.DrawLine(pen, scale * .08f, scale * .54f, scale * .26f, scale * .94f); DrawDirectionNose(g, pen, scale * .20f);
-            }
+                DrawPerson(g, pen, item.ViewMode);
         }
         finally { g.Restore(state); }
     }
 
-    private static void DrawCamera(Graphics g, PointF center, float angle, float scale, Pen pen, Brush fill, MarkerView view, PointF direction)
+    private static void DrawPerson(Graphics g, Pen pen, MarkerView view)
     {
-        var vectorLength = MathF.Sqrt(MathF.Pow(direction.X - center.X, 2) + MathF.Pow(direction.Y - center.Y, 2)); var viewLength = MathF.Max(scale * 2.8f, vectorLength); var halfFov = view == MarkerView.Top ? .34f : .25f;
-        var state = g.Save();
-        try
+        if (view == MarkerView.Top)
         {
-            g.TranslateTransform(center.X, center.Y); g.RotateTransform(angle * 180f / MathF.PI);
-            var lensX = scale * .52f; var cone = new PointF[] { new(lensX, -scale * .18f), new(viewLength * MathF.Cos(halfFov), viewLength * MathF.Sin(halfFov)), new(viewLength * MathF.Cos(-halfFov), viewLength * MathF.Sin(-halfFov)) };
-            g.FillPolygon(fill, cone); g.DrawLine(pen, cone[0], cone[1]); g.DrawLine(pen, cone[0], cone[2]); g.DrawLine(pen, cone[1], cone[2]);
-            if (view == MarkerView.Top)
-            {
-                FillRoundedRectangle(g, fill, -scale * .55f, -scale * .38f, scale * 1.10f, scale * .76f, scale * .12f); DrawRoundedRectangle(g, pen, -scale * .55f, -scale * .38f, scale * 1.10f, scale * .76f, scale * .12f); g.FillEllipse(fill, scale * .28f, -scale * .24f, scale * .48f, scale * .48f); g.DrawEllipse(pen, scale * .28f, -scale * .24f, scale * .48f, scale * .48f);
-            }
-            else
-            {
-                FillRoundedRectangle(g, fill, -scale * .45f, -scale * .48f, scale * .90f, scale * .76f, scale * .10f); DrawRoundedRectangle(g, pen, -scale * .45f, -scale * .48f, scale * .90f, scale * .76f, scale * .10f); g.FillEllipse(fill, scale * .40f, -scale * .25f, scale * .36f, scale * .36f); g.DrawEllipse(pen, scale * .40f, -scale * .25f, scale * .36f, scale * .36f);
-            }
+            // 头部在肩线前方，肩线在头部两侧收口。
+            using var shoulders = new GraphicsPath();
+            shoulders.AddBezier(-.37f, .14f, -1.27f, .03f, -1.02f, -.64f, 0, -.64f);
+            shoulders.AddBezier(0, -.64f, 1.02f, -.64f, 1.27f, .03f, .37f, .14f);
+            g.DrawPath(pen, shoulders);
+            g.DrawEllipse(pen, -.37f, -.22f, .74f, .68f);
+            g.DrawEllipse(pen, -.94f, -.01f, .20f, .75f);
+            g.DrawEllipse(pen, .74f, -.01f, .20f, .75f);
+            return;
         }
-        finally { g.Restore(state); }
+
+        g.DrawEllipse(pen, -.30f, -1.00f, .60f, .88f);
+        g.DrawLine(pen, -.14f, -.67f, .14f, -.67f);
+        g.DrawLine(pen, -.13f, -.48f, -.08f, -.48f);
+        g.DrawLine(pen, .08f, -.48f, .13f, -.48f);
+        g.DrawLine(pen, 0, -.12f, 0, .32f);
+        g.DrawLine(pen, -.61f, .14f, .61f, .14f);
+        g.DrawBezier(pen, 0, .32f, -.06f, .69f, -.34f, .91f, -.61f, 1.03f);
+        g.DrawBezier(pen, 0, .32f, .06f, .69f, .34f, .91f, .61f, 1.03f);
     }
 
-    private static float MarkerScale(AnnotationItem item) => Math.Clamp(Math.Max(24, item.Style.Width * 6f), 24, 120);
-    private static float Distance(PointF a, PointF b) => MathF.Sqrt(MathF.Pow(a.X - b.X, 2) + MathF.Pow(a.Y - b.Y, 2));
-    private static void DrawDirectionNose(Graphics g, Pen pen, float length) { g.DrawLine(pen, 0, -length * .7f, length, 0); g.DrawLine(pen, length, 0, 0, length * .7f); }
-    private static GraphicsPath RoundedRect(float x, float y, float width, float height, float radius)
+    private static void DrawCamera(Graphics g, Pen pen, MarkerView view, float length)
     {
-        var d = radius * 2; var path = new GraphicsPath(); path.AddArc(x, y, d, d, 180, 90); path.AddArc(x + width - d, y, d, d, 270, 90); path.AddArc(x + width - d, y + height - d, d, d, 0, 90); path.AddArc(x, y + height - d, d, d, 90, 90); path.CloseFigure(); return path;
+        g.DrawRectangle(pen, -.83f, -.35f, 1.42f, .75f);
+        g.DrawLines(pen, new PointF[] { new(.59f, -.17f), new(.92f, -.17f), new(.92f, .22f), new(.59f, .22f) });
+        if (view == MarkerView.Elevation)
+        {
+            g.DrawEllipse(pen, -.69f, -.95f, .60f, .60f);
+            g.DrawEllipse(pen, .09f, -.78f, .43f, .43f);
+            g.DrawLines(pen, new PointF[] { new(-.67f, .40f), new(-.67f, .75f), new(-.25f, .75f), new(-.25f, .40f) });
+        }
+        else
+        {
+            using var detailPen = (Pen)pen.Clone();
+            detailPen.Width *= .72f;
+            g.DrawRectangle(detailPen, -.66f, -.17f, .62f, .20f);
+            g.DrawRectangle(detailPen, .12f, .12f, .28f, .12f);
+        }
+
+        var lens = new PointF(.92f, .025f);
+        var halfAngle = view == MarkerView.Top ? .43f : .37f;
+        var spread = (length - lens.X) * MathF.Tan(halfAngle);
+        DrawViewRay(g, pen, lens, new PointF(length, lens.Y - spread));
+        DrawViewRay(g, pen, lens, new PointF(length, lens.Y + spread));
     }
-    private static void FillRoundedRectangle(Graphics g, Brush brush, float x, float y, float width, float height, float radius) { using var path = RoundedRect(x, y, width, height, radius); g.FillPath(brush, path); }
-    private static void DrawRoundedRectangle(Graphics g, Pen pen, float x, float y, float width, float height, float radius) { using var path = RoundedRect(x, y, width, height, radius); g.DrawPath(pen, path); }
+
+    private static void DrawViewRay(Graphics g, Pen pen, PointF lens, PointF tip)
+    {
+        g.DrawLine(pen, lens, tip);
+        DrawArrowHead(g, pen, lens, tip, .32f);
+    }
+
+    private static float MarkerScale(AnnotationItem item) => 16 + Math.Clamp(item.Style.Width, 1, 50) * 2f;
+    private static float Distance(PointF a, PointF b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return MathF.Sqrt(dx * dx + dy * dy);
+    }
 
     private static PointF[] MakeWave(List<PointF> points)
     {
@@ -177,6 +194,13 @@ public sealed class DrawingCanvas : Control
         for (int i = 0; i < points.Count - 1; i++) { var p = points[i]; var q = points[i + 1]; var dx = q.X - p.X; var dy = q.Y - p.Y; var len = Math.Max(1, MathF.Sqrt(dx * dx + dy * dy)); var nx = -dy / len; var ny = dx / len; var mid = new PointF((p.X + q.X) / 2 + nx * 6 * (i % 2 == 0 ? 1 : -1), (p.Y + q.Y) / 2 + ny * 6 * (i % 2 == 0 ? 1 : -1)); if (i == 0) result.Add(p); result.Add(mid); result.Add(q); }
         return result.ToArray();
     }
-    private static void DrawArrowHead(Graphics g, Pen pen, PointF a, PointF b)
-    { var angle = Math.Atan2(b.Y - a.Y, b.X - a.X); const double size = 12; var p1 = new PointF(b.X - (float)(size * Math.Cos(angle - Math.PI / 6)), b.Y - (float)(size * Math.Sin(angle - Math.PI / 6))); var p2 = new PointF(b.X - (float)(size * Math.Cos(angle + Math.PI / 6)), b.Y - (float)(size * Math.Sin(angle + Math.PI / 6))); g.DrawLines(pen, new[] { p1, b, p2 }); }
+    private static void DrawArrowHead(Graphics g, Pen pen, PointF a, PointF b, float size = 12)
+    {
+        var angle = MathF.Atan2(b.Y - a.Y, b.X - a.X);
+        var left = angle - MathF.PI / 6;
+        var right = angle + MathF.PI / 6;
+        var p1 = new PointF(b.X - size * MathF.Cos(left), b.Y - size * MathF.Sin(left));
+        var p2 = new PointF(b.X - size * MathF.Cos(right), b.Y - size * MathF.Sin(right));
+        g.DrawLines(pen, new[] { p1, b, p2 });
+    }
 }

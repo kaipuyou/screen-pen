@@ -117,7 +117,7 @@ internal static class Program
 
         using var key = Registry.CurrentUser.CreateSubKey(UninstallKey);
         key?.SetValue("DisplayName", ProductName);
-        key?.SetValue("DisplayVersion", "1.0.0");
+        key?.SetValue("DisplayVersion", typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "1.1.0");
         key?.SetValue("Publisher", "知溯工具");
         key?.SetValue("DisplayIcon", exePath);
         key?.SetValue("InstallLocation", installDir);
